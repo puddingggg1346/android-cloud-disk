@@ -35,73 +35,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Color.Black)) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-                    if (token.isEmpty()) AuthScreen() else DiskScreen()
-                }
-            }
-        }
-    }
-
-    @Composable
-    fun AuthScreen() {
-        var user by remember { mutableStateOf("") }
-        var pass by remember { mutableStateOf("") }
-        var repass by remember { mutableStateOf("") }
-        var isRegMode by remember { mutableStateOf(false) }
-
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(if (isRegMode) "注册" else "你好", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Spacer(modifier = Modifier.height(24.dp))
-            Column(
-                modifier = Modifier.fillMaxWidth().border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(20.dp)
-            ) {
-                OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("用户") })
-                Spacer(modifier = Modifier.height(10.dp))
-                OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation())
-                
-                if (isRegMode) {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    OutlinedTextField(value = repass, onValueChange = { repass = it }, label = { Text("重复密码") }, visualTransformation = PasswordVisualTransformation())
-                }
-                
-                Spacer(modifier = Modifier.height(20.dp))
-                Button(
-                    onClick = { submitAuth(user, pass, repass, isRegMode) { isRegMode = false } },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
-                ) {
-                    Text(if (isRegMode) "注册" else "登录", fontWeight = FontWeight.Bold)
-                }
-                TextButton(onClick = { isRegMode = !isRegMode }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text(if (isRegMode) "返回登录" else "或注册", color = Color.White)
-                }
-            }
-        }
-    }
-
-    @Composable
-    fun DiskScreen() {
-        var fileList by remember { mutableStateOf(listOf<String>()) }
-        LaunchedEffect(Unit) { fetchFiles { fileList = it } }
-
-        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("文件列表", fontSize = 24.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                Button(onClick = { token = "" }) { Text("退出") }
-            }
-            Spacer(modifier = Modifier.height(20.dp))
-            LazyColumn {
-                items(fileList) { item ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.Gray).padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(item, color = Color.White)
-                        Text("下载", color = Color.Cyan)
-                    }
+                    if (token.isEmpty()) AuthScreen(::submitAuth, ::showToast) else DiskScreen(::fetchFiles, { token = "" }, ::showToast)
                 }
             }
         }
@@ -142,4 +76,70 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showToast(msg: String) = runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+}
+
+@Composable
+fun AuthScreen(onSubmitAuth: (String, String, String, Boolean, () -> Unit) -> Unit, showToast: (String) -> Unit) {
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var repass by remember { mutableStateOf("") }
+    var isRegMode by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(if (isRegMode) "注册" else "你好", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Spacer(modifier = Modifier.height(24.dp))
+        Column(
+            modifier = Modifier.fillMaxWidth().border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(20.dp)
+        ) {
+            OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("用户") })
+            Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation())
+            
+            if (isRegMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(value = repass, onValueChange = { repass = it }, label = { Text("重复密码") }, visualTransformation = PasswordVisualTransformation())
+            }
+            
+            Spacer(modifier = Modifier.height(20.dp))
+            Button(
+                onClick = { onSubmitAuth(user, pass, repass, isRegMode) { isRegMode = false } },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+            ) {
+                Text(if (isRegMode) "注册" else "登录", fontWeight = FontWeight.Bold)
+            }
+            TextButton(onClick = { isRegMode = !isRegMode }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text(if (isRegMode) "返回登录" else "或注册", color = Color.White)
+            }
+        }
+    }
+}
+
+@Composable
+fun DiskScreen(onFetchFiles: ((List<String>) -> Unit) -> Unit, onLogout: () -> Unit, showToast: (String) -> Unit) {
+    var fileList by remember { mutableStateOf(listOf<String>()) }
+    LaunchedEffect(Unit) { onFetchFiles { fileList = it } }
+
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("文件列表", fontSize = 24.sp, color = Color.White, fontWeight = FontWeight.Bold)
+            Button(onClick = { onLogout() }) { Text("退出") }
+        }
+        Spacer(modifier = Modifier.height(20.dp))
+        LazyColumn {
+            items(fileList) { item ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.Gray).padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(item, color = Color.White)
+                    Text("下载", color = Color.Cyan)
+                }
+            }
+        }
+    }
 }
