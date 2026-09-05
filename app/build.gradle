@@ -1,10 +1,30 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android' // 如果项目使用了 Kotlin
+}
+
 android {
-    // ...
+    namespace 'com.example.cloud' // 根据你的包名修改
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.cloud"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = '17'
     }
+}
+
+dependencies {
+    // 你的依赖项...
 }
