@@ -1,9 +1,259 @@
 #!/bin/bash
-mkdir -p app/src/main/java/com/cloud/disk
-mkdir -p app/src/main/res/values
+set -e
 
-# 1. build.gradle (Module)
-cat << 'GEOF' > app/build.gradle
+# 1. 重建目录结构
+rm -rf cloud-disk
+mkdir -p cloud-disk/{server,client,android-client/.github/workflows}
+cd cloud-disk
+
+# 2. 服务端 (Server)
+cat << 'SPEC' > server/package.json
+{
+  "name": "cloud-disk-server",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1"
+  }
+}
+SPEC
+
+cat << 'SPEC' > server/server.js
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const readline = require('readline');
+
+const app = express();
+const SECRET = 'secret_key_123';
+const UPLOAD_DIR = path.join(__dirname, 'storage');
+const DB_FILE = path.join(__dirname, 'users.json');
+
+app.use(cors());
+app.use(express.json());
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, '{}');
+
+const getUsers = () => JSON.parse(fs.readFileSync(DB_FILE));
+const saveUsers = (data) => fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const userDir = path.join(UPLOAD_DIR, req.user.username);
+    if (!fs.existsSync(userDir)) fs.mkdirSync(userDir);
+    cb(null, userDir);
+  },
+  filename: (req, file, cb) => cb(null, file.originalname)
+});
+const upload = multer({ storage });
+
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: '未登录' });
+  try {
+    req.user = jwt.verify(token, SECRET);
+    next();
+  } catch {
+    res.status(403).json({ error: 'Token无效' });
+  }
+};
+
+app.post('/register', async (req, res) => {
+  const { username, password } = req.body;
+  const users = getUsers();
+  if (users[username]) return res.status(400).json({ error: '用户已存在' });
+  users[username] = await bcrypt.hash(password, 10);
+  saveUsers(users);
+  res.json({ message: '注册成功' });
+});
+
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
+  const users = getUsers();
+  if (!users[username] || !(await bcrypt.compare(password, users[username]))) {
+    return res.status(400).json({ error: '账号或密码错误' });
+  }
+  const token = jwt.sign({ username }, SECRET);
+  res.json({ token });
+});
+
+app.get('/files', auth, (req, res) => {
+  const userDir = path.join(UPLOAD_DIR, req.user.username);
+  if (!fs.existsSync(userDir)) return res.json([]);
+  res.json(fs.readdirSync(userDir));
+});
+
+app.post('/upload', auth, upload.single('file'), (req, res) => {
+  res.json({ message: '上传成功' });
+});
+
+app.get('/download/:name', auth, (req, res) => {
+  const filePath = path.join(UPLOAD_DIR, req.user.username, req.params.name);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
+  res.download(filePath);
+});
+
+app.listen(3000, () => console.log('服务端启动: http://localhost:3000'));
+
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const cliMenu = () => {
+  console.log('\n--- 服务端 CLI 管理 ---');
+  console.log('1. 用户列表  2. 删除用户  3. 退出 CLI');
+  rl.question('选择操作: ', async (opt) => {
+    const users = getUsers();
+    if (opt === '1') {
+      console.log('当前用户:', Object.keys(users));
+    } else if (opt === '2') {
+      rl.question('输入要删除的用户名: ', (user) => {
+        if (users[user]) {
+          delete users[user];
+          saveUsers(users);
+          fs.rmSync(path.join(UPLOAD_DIR, user), { recursive: true, force: true });
+          console.log('已删除用户及其文件');
+        } else console.log('用户不存在');
+        cliMenu();
+      });
+      return;
+    } else if (opt === '3') return rl.close();
+    cliMenu();
+  });
+};
+setTimeout(cliMenu, 1000);
+SPEC
+
+# 3. Web 客户端 (Client)
+cat << 'SPEC' > client/index.html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cloud Disk</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+  body { background: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  .title { font-size: 42px; font-weight: bold; margin-bottom: 24px; text-align: center; }
+  .card { width: 100%; max-width: 360px; border: 2px solid #fff; border-radius: 16px; padding: 24px 20px; background: #000; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  .row label { font-size: 18px; font-weight: bold; width: 80px; }
+  .row input { flex: 1; height: 44px; background: #000; border: 2px solid #fff; border-radius: 8px; color: #fff; padding: 0 10px; font-size: 16px; outline: none; }
+  .btn-action { width: 100%; height: 44px; background: #fff; color: #000; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; margin-bottom: 12px; cursor: pointer; }
+  .link-toggle { display: block; text-align: center; color: #fff; font-size: 14px; text-decoration: underline; cursor: pointer; }
+  .hidden { display: none; }
+  ul { list-style: none; } li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #333; }
+</style>
+</head>
+<body>
+
+<div id="auth-box">
+  <div class="title" id="page-title">你好</div>
+  <div class="card">
+    <div class="row"><label>用户</label><input id="user" type="text"></div>
+    <div class="row"><label>密码</label><input id="pass" type="password"></div>
+    <div class="row hidden" id="repass-row"><label>重复密码</label><input id="repass" type="password"></div>
+    <button class="btn-action" id="main-btn" onclick="submitAuth()">登录</button>
+    <span class="link-toggle" id="toggle-btn" onclick="toggleView()">或注册</span>
+  </div>
+</div>
+
+<div id="disk-box" class="card hidden">
+  <div style="display:flex; justify-content:space-between; margin-bottom:15px;">
+    <h2>文件列表</h2>
+    <button onclick="logout()" style="padding:2px 8px;">退出</button>
+  </div>
+  <input type="file" id="fileInput" onchange="upload()" style="margin-bottom:15px; width:100%;">
+  <ul id="fileList"></ul>
+</div>
+
+<script>
+const API = 'http://localhost:3000';
+let token = localStorage.getItem('token');
+let isRegisterMode = false;
+
+if(token) showDisk();
+
+function toggleView() {
+  isRegisterMode = !isRegisterMode;
+  document.getElementById('page-title').innerText = isRegisterMode ? '注册' : '你好';
+  document.getElementById('repass-row').classList.toggle('hidden', !isRegisterMode);
+  document.getElementById('main-btn').innerText = isRegisterMode ? '注册' : '登录';
+  document.getElementById('toggle-btn').innerText = isRegisterMode ? '返回登录' : '或注册';
+}
+
+async function submitAuth() {
+  const u = document.getElementById('user').value, p = document.getElementById('pass').value;
+  if(!u || !p) return alert('请输入账号密码');
+  if(isRegisterMode && p !== document.getElementById('repass').value) return alert('密码不一致');
+
+  const type = isRegisterMode ? 'register' : 'login';
+  const res = await fetch(`${API}/${type}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u, password:p}) });
+  const data = await res.json();
+
+  if(data.token) { localStorage.setItem('token', data.token); token = data.token; showDisk(); }
+  else if(isRegisterMode && res.ok) { alert('注册成功，请登录'); toggleView(); }
+  else alert(data.message || data.error);
+}
+
+function logout() { localStorage.removeItem('token'); location.reload(); }
+
+async function showDisk() {
+  document.getElementById('auth-box').classList.add('hidden');
+  document.getElementById('disk-box').classList.remove('hidden');
+  const res = await fetch(`${API}/files`, { headers: { Authorization: `Bearer ${token}` } });
+  const files = await res.json();
+  document.getElementById('fileList').innerHTML = files.map(f => `<li><span>${f}</span><a onclick="downloadFile('${f}')" style="color:#fff;cursor:pointer;">下载</a></li>`).join('');
+}
+
+async function upload() {
+  const file = document.getElementById('fileInput').files[0];
+  if(!file) return;
+  const formData = new FormData(); formData.append('file', file);
+  await fetch(`${API}/upload`, { method:'POST', headers:{ Authorization:`Bearer ${token}` }, body:formData });
+  document.getElementById('fileInput').value = '';
+  showDisk();
+}
+
+async function downloadFile(name) {
+  const res = await fetch(`${API}/download/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` } });
+  if(!res.ok) return alert('下载失败');
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  window.URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
+SPEC
+
+# 4. 安卓原生客户端 (Android Native)
+cd android-client
+mkdir -p app/src/main/java/com/cloud/disk
+
+cat << 'SPEC' > settings.gradle
+rootProject.name = "CloudDisk"
+include ':app'
+SPEC
+
+cat << 'SPEC' > build.gradle
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+    }
+}
+SPEC
+
+cat << 'SPEC' > app/build.gradle
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
@@ -12,7 +262,6 @@ plugins {
 android {
     namespace 'com.cloud.disk'
     compileSdk 34
-
     defaultConfig {
         applicationId "com.cloud.disk"
         minSdk 24
@@ -20,7 +269,6 @@ android {
         versionCode 1
         versionName "1.0"
     }
-
     buildFeatures { compose true }
     composeOptions { kotlinCompilerExtensionVersion '1.5.1' }
 }
@@ -33,17 +281,13 @@ dependencies {
     implementation 'androidx.compose.material3:material3'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
-GEOF
+SPEC
 
-# 2. AndroidManifest.xml
-cat << 'MEOF' > app/src/main/AndroidManifest.xml
+cat << 'SPEC' > app/src/main/AndroidManifest.xml
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application
-        android:usesCleartextTraffic="true"
-        android:label="Cloud Disk"
-        android:theme="@android:style/Theme.Material.NoTitleBar">
+    <application android:usesCleartextTraffic="true" android:label="Cloud Disk" android:theme="@android:style/Theme.Material.NoTitleBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -52,17 +296,18 @@ cat << 'MEOF' > app/src/main/AndroidManifest.xml
         </activity>
     </application>
 </manifest>
-MEOF
+SPEC
 
-# 3. 原生 Compose 界面与网络交互逻辑 (MainActivity.kt)
-cat << 'KEOF' > app/src/main/java/com/cloud/disk/MainActivity.kt
+cat << 'SPEC' > app/src/main/java/com/cloud/disk/MainActivity.kt
 package com.cloud.disk
 
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -73,6 +318,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -86,7 +332,7 @@ import java.io.IOException
 
 class MainActivity : ComponentActivity() {
     private val client = OkHttpClient()
-    private val apiHost = "http://10.0.2.2:3000" // 本地电脑/Termux调试IP
+    private val apiHost = "http://10.0.2.2:3000"
     private var token by mutableStateOf("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -114,18 +360,14 @@ class MainActivity : ComponentActivity() {
         ) {
             Text(if (isRegMode) "注册" else "你好", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Spacer(modifier = Modifier.height(24.dp))
-            Column(
-                modifier = Modifier.fillMaxWidth().border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(20.dp)
-            ) {
+            Column(modifier = Modifier.fillMaxWidth().border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(20.dp)) {
                 OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("用户") })
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation())
-                
                 if (isRegMode) {
                     Spacer(modifier = Modifier.height(10.dp))
                     OutlinedTextField(value = repass, onValueChange = { repass = it }, label = { Text("重复密码") }, visualTransformation = PasswordVisualTransformation())
                 }
-                
                 Spacer(modifier = Modifier.height(20.dp))
                 Button(
                     onClick = { submitAuth(user, pass, repass, isRegMode) { isRegMode = false } },
@@ -144,22 +386,33 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun DiskScreen() {
         var fileList by remember { mutableStateOf(listOf<String>()) }
+        val context = LocalContext.current
+        val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+            uri?.let { uploadFile(context, it) { fetchFiles { list -> fileList = list } } }
+        }
         LaunchedEffect(Unit) { fetchFiles { fileList = it } }
 
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("文件列表", fontSize = 24.sp, color = Color.White, fontWeight = FontWeight.Bold)
                 Button(onClick = { token = "" }) { Text("退出") }
             }
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = { filePicker.launch("*/*") },
+                modifier = Modifier.fillMaxWidth().border(1.dp, Color.White, RoundedCornerShape(8.dp)),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Black, contentColor = Color.White)
+            ) { Text("+ 上传本地文件") }
             Spacer(modifier = Modifier.height(20.dp))
             LazyColumn {
                 items(fileList) { item ->
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.Gray).padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).border(1.dp, Color.Gray).padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(item, color = Color.White)
-                        Text("下载", color = Color.Cyan)
+                        Text(item, color = Color.White, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { downloadFile(item) }) { Text("下载", color = Color.White) }
                     }
                 }
             }
@@ -200,9 +453,84 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun uploadFile(context: android.content.Context, uri: Uri, onComplete: () -> Unit) {
+        showToast("正在上传...")
+        val resolver = context.contentResolver
+        val inputStream = resolver.openInputStream(uri) ?: return
+        val bytes = inputStream.readBytes()
+        inputStream.close()
+
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", "upload_file", bytes.toRequestBody("application/octet-stream".toMediaType()))
+            .build()
+
+        val req = Request.Builder().url("$apiHost/upload").addHeader("Authorization", "Bearer $token").post(requestBody).build()
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { showToast("上传失败") }
+            override fun onResponse(call: Call, response: Response) {
+                runOnUiThread { showToast("上传成功"); onComplete() }
+            }
+        })
+    }
+
+    private fun downloadFile(fileName: String) {
+        showToast("开始下载: $fileName")
+        val req = Request.Builder().url("$apiHost/download/$fileName").addHeader("Authorization", "Bearer $token").build()
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { showToast("下载失败") }
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) showToast("响应成功") else showToast("下载失败")
+            }
+        })
+    }
+
     private fun showToast(msg: String) = runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
 }
-KEOF
-echo "原生 Android Kotlin 工程代码已就绪。"
+SPEC
+
+# 5. GitHub Actions 云打包配置
+cat << 'SPEC' > .github/workflows/build.yml
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build APK
+        run: gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+SPEC
+
+# 6. 推送到 GitHub 构建
+git init
+git add .
+git commit -m "feat: complete project initialization"
+gh repo create android-cloud-disk --public --source=. --remote=origin --push || git push origin main
+gh run watch
+gh run download -n app-debug
 EOF
-chmod +x setup_android.sh && ./setup_android.sh
+chmod +x setup_all.sh && ./setup_all.sh
+
