@@ -1,0 +1,208 @@
+#!/bin/bash
+mkdir -p app/src/main/java/com/cloud/disk
+mkdir -p app/src/main/res/values
+
+# 1. build.gradle (Module)
+cat << 'GEOF' > app/build.gradle
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.cloud.disk'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.cloud.disk"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildFeatures { compose true }
+    composeOptions { kotlinCompilerExtensionVersion '1.5.1' }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation platform('androidx.compose:compose-bom:2023.08.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+}
+GEOF
+
+# 2. AndroidManifest.xml
+cat << 'MEOF' > app/src/main/AndroidManifest.xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:usesCleartextTraffic="true"
+        android:label="Cloud Disk"
+        android:theme="@android:style/Theme.Material.NoTitleBar">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+MEOF
+
+# 3. 原生 Compose 界面与网络交互逻辑 (MainActivity.kt)
+cat << 'KEOF' > app/src/main/java/com/cloud/disk/MainActivity.kt
+package com.cloud.disk
+
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+
+class MainActivity : ComponentActivity() {
+    private val client = OkHttpClient()
+    private val apiHost = "http://10.0.2.2:3000" // 本地电脑/Termux调试IP
+    private var token by mutableStateOf("")
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme(background = Color.Black)) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                    if (token.isEmpty()) AuthScreen() else DiskScreen()
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun AuthScreen() {
+        var user by remember { mutableStateOf("") }
+        var pass by remember { mutableStateOf("") }
+        var repass by remember { mutableStateOf("") }
+        var isRegMode by remember { mutableStateOf(false) }
+
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(if (isRegMode) "注册" else "你好", fontSize = 36.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Spacer(modifier = Modifier.height(24.dp))
+            Column(
+                modifier = Modifier.fillMaxWidth().border(2.dp, Color.White, RoundedCornerShape(16.dp)).padding(20.dp)
+            ) {
+                OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("用户") })
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation())
+                
+                if (isRegMode) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(value = repass, onValueChange = { repass = it }, label = { Text("重复密码") }, visualTransformation = PasswordVisualTransformation())
+                }
+                
+                Spacer(modifier = Modifier.height(20.dp))
+                Button(
+                    onClick = { submitAuth(user, pass, repass, isRegMode) { isRegMode = false } },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)
+                ) {
+                    Text(if (isRegMode) "注册" else "登录", fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = { isRegMode = !isRegMode }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text(if (isRegMode) "返回登录" else "或注册", color = Color.White)
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun DiskScreen() {
+        var fileList by remember { mutableStateOf(listOf<String>()) }
+        LaunchedEffect(Unit) { fetchFiles { fileList = it } }
+
+        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("文件列表", fontSize = 24.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                Button(onClick = { token = "" }) { Text("退出") }
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+            LazyColumn {
+                items(fileList) { item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).border(1.dp, Color.Gray).padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(item, color = Color.White)
+                        Text("下载", color = Color.Cyan)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun submitAuth(u: String, p: String, rp: String, isReg: Boolean, onRegSuccess: () -> Unit) {
+        if (isReg && p != rp) return showToast("两次密码不一致")
+        val json = JSONObject().apply { put("username", u); put("password", p) }
+        val req = Request.Builder()
+            .url("$apiHost/${if (isReg) "register" else "login"}")
+            .post(json.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { showToast("网络错误") }
+            override fun onResponse(call: Call, response: Response) {
+                val body = JSONObject(response.body?.string() ?: "{}")
+                runOnUiThread {
+                    if (body.has("token")) token = body.getString("token")
+                    else if (isReg && response.isSuccessful) { showToast("注册成功"); onRegSuccess() }
+                    else showToast(body.optString("error", "操作失败"))
+                }
+            }
+        })
+    }
+
+    private fun fetchFiles(onResult: (List<String>) -> Unit) {
+        val req = Request.Builder().url("$apiHost/files").addHeader("Authorization", "Bearer $token").build()
+        client.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {}
+            override fun onResponse(call: Call, response: Response) {
+                val arr = JSONArray(response.body?.string() ?: "[]")
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) list.add(arr.getString(i))
+                runOnUiThread { onResult(list) }
+            }
+        })
+    }
+
+    private fun showToast(msg: String) = runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+}
+KEOF
+echo "原生 Android Kotlin 工程代码已就绪。"
+EOF
+chmod +x setup_android.sh && ./setup_android.sh
